@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>コンフィグ生成フォーム</title>
+<style>
+  :root { --accent: #1B5E8A; --bg: #f5f7fa; --card: #ffffff; --border: #d9e1e8; }
+  * { box-sizing: border-box; }
+  body { font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; margin: 0; background: var(--bg); color: #222; }
+  header { background: var(--accent); color: #fff; padding: 14px 24px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header p { margin: 4px 0 0; font-size: 12px; opacity: .85; }
+  main { display: flex; gap: 16px; padding: 16px 24px; align-items: flex-start; flex-wrap: wrap; }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  #form-panel { flex: 1 1 420px; max-width: 560px; }
+  #out-panel { flex: 1 1 480px; position: sticky; top: 16px; }
+  .selector { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+  .selector button { padding: 8px 14px; border: 1px solid var(--border); background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .selector button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .field { margin-bottom: 10px; }
+  .field label { display: block; font-size: 12px; color: #555; margin-bottom: 3px; }
+  .field input { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 5px; font-size: 13px; font-family: Menlo, monospace; }
+  .field input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  #generate { width: 100%; margin-top: 8px; padding: 12px; background: var(--accent); color: #fff; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; }
+  #generate:hover { opacity: .92; }
+  .out-actions { display: flex; gap: 8px; margin-bottom: 10px; }
+  .out-actions button { padding: 8px 14px; border: 1px solid var(--border); background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  #output { width: 100%; height: 65vh; font-family: Menlo, monospace; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; padding: 10px; white-space: pre; overflow: auto; background: #fbfdff; }
+  .note { font-size: 11px; color: #a33; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ネットワーク機器コンフィグ生成フォーム</h1>
+  <p>値を入力して「コンフィグ生成」を押すと右側に表示されます。一括生成はExcel + generate_configs.py を使ってください。</p>
+</header>
+<main>
+  <div class="panel" id="form-panel">
+    <div class="selector" id="device-sel"></div>
+    <div class="selector" id="vendor-sel"></div>
+    <div id="fields"></div>
+    <button id="generate">コンフィグ生成</button>
+  </div>
+  <div class="panel" id="out-panel">
+    <div class="out-actions">
+      <button id="copy">コピー</button>
+      <button id="download">ダウンロード(.txt)</button>
+      <span id="status" style="font-size:12px;color:#2a7;align-self:center;"></span>
+    </div>
+    <textarea id="output" readonly placeholder="ここに生成結果が表示されます"></textarea>
+    <p class="note">★ 生成されたコンフィグは投入前に必ず内容を確認してください(特に「★要確認」の行)。</p>
+  </div>
+</main>
+<script>
+const DATA = {"templates": {"router-cisco": "! =====================================================================\n! Ciscoルータ コンフィグテンプレート(拠点ルータ: WAN1本 + LAN1本想定)\n! 二重波カッコで囲まれた箇所が、Excel変数一覧の値に置き換わります。\n! このファイル自体はJinja2テンプレートのため、ルータには直接投入しないでください。\n! =====================================================================\n!\nhostname {{ hostname }}\n!\nenable secret {{ enable_secret }}\n!\nno ip domain-lookup\nip domain-name {{ mgmt_domain }}\n!\nusername {{ local_username }} privilege 15 secret {{ local_password }}\n!\ncrypto key generate rsa modulus 2048\n!\n! ---------------------------------------------------------------------\n! 管理アクセス制限用ACL(VTY/SSHへのアクセス元を許可するネットワーク)\n! ---------------------------------------------------------------------\nip access-list standard MGMT-ACCESS\n permit {{ mgmt_acl_permit_network }} {{ mgmt_acl_permit_wildcard }}\n deny   any log\n!\nline con 0\n logging synchronous\nline vty 0 4\n access-class MGMT-ACCESS in\n login local\n transport input ssh\n!\n! ---------------------------------------------------------------------\n! WANインタフェース(対向: 上位網/HQ)\n! ---------------------------------------------------------------------\ninterface {{ wan_interface }}\n description {{ wan_description }}\n ip address {{ wan_ip }} {{ wan_mask }}\n no shutdown\n!\n! ---------------------------------------------------------------------\n! LANインタフェース(L2スイッチへのトランクポート)\n! ---------------------------------------------------------------------\ninterface {{ lan_interface }}\n description Trunk to L2SW\n switchport trunk encapsulation dot1q\n switchport mode trunk\n switchport trunk allowed vlan {{ vlan_data_id }},{{ vlan_voice_id }}\n no shutdown\n!\nvlan {{ vlan_data_id }}\n name {{ vlan_data_name }}\n!\nvlan {{ vlan_voice_id }}\n name {{ vlan_voice_name }}\n!\ninterface Vlan{{ vlan_data_id }}\n description {{ vlan_data_name }} SVI\n ip address {{ vlan_data_ip }} {{ vlan_data_mask }}\n no shutdown\n!\ninterface Vlan{{ vlan_voice_id }}\n description {{ vlan_voice_name }} SVI\n ip address {{ vlan_voice_ip }} {{ vlan_voice_mask }}\n no shutdown\n!\n! ---------------------------------------------------------------------\n! ルーティング(OSPF)\n! ---------------------------------------------------------------------\nrouter ospf {{ ospf_process_id }}\n router-id {{ ospf_router_id }}\n network {{ wan_ip }} 0.0.0.0 area {{ ospf_area }}\n network {{ vlan_data_ip }} 0.0.0.255 area {{ ospf_area }}\n network {{ vlan_voice_ip }} 0.0.0.255 area {{ ospf_area }}\n!\n! ---------------------------------------------------------------------\n! 運用関連(NTP/Syslog/SNMP)\n! ---------------------------------------------------------------------\nntp server {{ ntp_server }}\n!\nlogging host {{ syslog_server }}\nlogging trap informational\n!\nsnmp-server community {{ snmp_community }} RO\nsnmp-server location {{ snmp_location }}\n!\nend\n", "router-juniper": "# =====================================================================\n# Juniper (Junos) 拠点ルータ テンプレート(set形式 / WAN1本 + LANタグVLAN想定)\n# 二重波カッコの箇所がExcel変数一覧の値に置き換わります。\n# 注意: #で始まるコメント行は load set 時にエラーになるため、投入前に削除してください。\n# 注意: plain-text-password-value は投入後ハッシュ化されます(平文管理に注意)。\n# =====================================================================\n#\nset system host-name {{ hostname }}\nset system time-zone Asia/Tokyo\nset system domain-name {{ mgmt_domain }}\nset system root-authentication plain-text-password-value {{ enable_secret }}\nset system login user {{ local_username }} class super-user authentication plain-text-password-value {{ local_password }}\nset system services ssh\n#\n# WANインタフェース(対向: 上位網/HQ)\nset interfaces {{ wan_interface }} description \"{{ wan_description }}\"\nset interfaces {{ wan_interface }} unit 0 family inet address {{ wan_ip }}/{{ wan_prefix }}\n#\n# LANトランクとVLAN(IRBでL3終端)\nset interfaces {{ lan_interface }} description \"Trunk to L2SW\"\nset interfaces {{ lan_interface }} unit 0 family ethernet-switching interface-mode trunk\nset interfaces {{ lan_interface }} unit 0 family ethernet-switching vlan members {{ vlan_data_name }}\nset interfaces {{ lan_interface }} unit 0 family ethernet-switching vlan members {{ vlan_voice_name }}\nset vlans {{ vlan_data_name }} vlan-id {{ vlan_data_id }}\nset vlans {{ vlan_data_name }} l3-interface irb.{{ vlan_data_id }}\nset vlans {{ vlan_voice_name }} vlan-id {{ vlan_voice_id }}\nset vlans {{ vlan_voice_name }} l3-interface irb.{{ vlan_voice_id }}\nset interfaces irb unit {{ vlan_data_id }} description \"{{ vlan_data_name }} SVI\"\nset interfaces irb unit {{ vlan_data_id }} family inet address {{ vlan_data_ip }}/{{ vlan_data_prefix }}\nset interfaces irb unit {{ vlan_voice_id }} description \"{{ vlan_voice_name }} SVI\"\nset interfaces irb unit {{ vlan_voice_id }} family inet address {{ vlan_voice_ip }}/{{ vlan_voice_prefix }}\n#\n# ルーティング(OSPF)\nset routing-options router-id {{ ospf_router_id }}\nset protocols ospf area {{ ospf_area }} interface {{ wan_interface }}.0\nset protocols ospf area {{ ospf_area }} interface irb.{{ vlan_data_id }}\nset protocols ospf area {{ ospf_area }} interface irb.{{ vlan_voice_id }}\n#\n# 管理アクセス制限(SSH許可元) ★要確認: lo0フィルタ適用は運用ポリシーに合わせて\nset policy-options prefix-list MGMT-NW {{ mgmt_acl_permit_network }}/{{ mgmt_acl_prefix }}\n#\n# 運用関連(NTP/Syslog/SNMP)\nset system ntp server {{ ntp_server }}\nset system syslog host {{ syslog_server }} any info\nset snmp community {{ snmp_community }} authorization read-only\nset snmp location \"{{ snmp_location }}\"\n", "router-nec": "! =====================================================================\n! NEC UNIVERGE IXシリーズ 拠点ルータ テンプレート(WAN1本 + LANタグVLAN想定)\n! 二重波カッコの箇所がExcel変数一覧の値に置き換わります。\n! 「★要確認」の行は機種・ファーム版数によりコマンドが異なる場合があります。\n! 投入前に必ず該当機種のコマンドリファレンスで確認してください。\n! =====================================================================\n!\nhostname {{ hostname }}\ntimezone +0900\n!\nusername {{ local_username }} password plain {{ local_password }} administrator\n!\n! ---------------------------------------------------------------------\n! 管理アクセス(SSH) ★要確認: 機種によりssh-server関連コマンドが異なります\n! ---------------------------------------------------------------------\nssh-server ip enable\ntelnet-server ip none\n!\n! ---------------------------------------------------------------------\n! WANインタフェース(対向: 上位網/HQ)\n! ---------------------------------------------------------------------\ninterface {{ wan_interface }}\n  description {{ wan_description }}\n  ip address {{ wan_ip }}/{{ wan_prefix }}\n  no shutdown\n!\n! ---------------------------------------------------------------------\n! LAN物理インタフェースとタグVLANサブインタフェース\n! ---------------------------------------------------------------------\ninterface {{ lan_interface }}\n  no ip address\n  no shutdown\n!\ninterface {{ lan_interface_base }}.1\n  encapsulation dot1q {{ vlan_data_id }} tpid 8100\n  auto-connect\n  ip address {{ vlan_data_ip }}/{{ vlan_data_prefix }}\n  no shutdown\n!\ninterface {{ lan_interface_base }}.2\n  encapsulation dot1q {{ vlan_voice_id }} tpid 8100\n  auto-connect\n  ip address {{ vlan_voice_ip }}/{{ vlan_voice_prefix }}\n  no shutdown\n!\n! ---------------------------------------------------------------------\n! ルーティング(OSPF)\n! ---------------------------------------------------------------------\nip router ospf {{ ospf_process_id }}\n  router-id {{ ospf_router_id }}\n  network {{ wan_network }}/{{ wan_prefix }} area {{ ospf_area }}\n  network {{ vlan_data_network }}/{{ vlan_data_prefix }} area {{ ospf_area }}\n  network {{ vlan_voice_network }}/{{ vlan_voice_prefix }} area {{ ospf_area }}\n!\n! ---------------------------------------------------------------------\n! 運用関連(NTP/Syslog/SNMP) ★要確認: logging/snmp-agent系は版数差あり\n! ---------------------------------------------------------------------\nntp server {{ ntp_server }}\n!\nlogging host {{ syslog_server }}\nlogging subsystem all warn\n!\nsnmp-agent ip enable\nsnmp-agent ip community {{ snmp_community }}\nsnmp-agent ip location {{ snmp_location }}\n!\n", "router-yamaha": "# =====================================================================\n# YAMAHA RTXシリーズ 拠点ルータ テンプレート(WAN1本 + LANタグVLAN想定)\n# 二重波カッコの箇所がExcel変数一覧の値に置き換わります。\n# wan_interface には lan2、lan_interface には lan1 のような値を入れてください。\n# 「★要確認」の行は機種・ファーム版数によりコマンドが異なる場合があります。\n# =====================================================================\n#\nconsole character ja.utf8\n#\n# 管理ユーザー\nlogin user {{ local_username }} {{ local_password }}\nadministrator password {{ enable_secret }}\n#\n# 管理アクセス(SSH) ★要確認: 初回は sshd host key generate の実行が必要\nsshd service on\ntelnetd service off\n#\n# ---------------------------------------------------------------------\n# WANインタフェース(対向: 上位網/HQ)\n# ---------------------------------------------------------------------\ndescription {{ wan_interface }} \"{{ wan_description }}\"\nip {{ wan_interface }} address {{ wan_ip }}/{{ wan_prefix }}\n#\n# ---------------------------------------------------------------------\n# LANタグVLAN\n# ---------------------------------------------------------------------\nvlan {{ lan_interface }}/1 802.1q vid={{ vlan_data_id }} name={{ vlan_data_name }}\nip {{ lan_interface }}/1 address {{ vlan_data_ip }}/{{ vlan_data_prefix }}\n#\nvlan {{ lan_interface }}/2 802.1q vid={{ vlan_voice_id }} name={{ vlan_voice_name }}\nip {{ lan_interface }}/2 address {{ vlan_voice_ip }}/{{ vlan_voice_prefix }}\n#\n# ---------------------------------------------------------------------\n# ルーティング(OSPF)  ※area 0 は backbone と表記\n# ---------------------------------------------------------------------\nospf use on\nospf router id {{ ospf_router_id }}\nospf area {{ ospf_area_yamaha }}\nip {{ wan_interface }} ospf area {{ ospf_area_yamaha }}\nip {{ lan_interface }}/1 ospf area {{ ospf_area_yamaha }}\nip {{ lan_interface }}/2 ospf area {{ ospf_area_yamaha }}\nospf configure refresh\n#\n# ---------------------------------------------------------------------\n# 運用関連(NTP/Syslog/SNMP)\n# ---------------------------------------------------------------------\nntpdate {{ ntp_server }}\nschedule at 1 */* 04:00 * ntpdate {{ ntp_server }}\n#\nsyslog host {{ syslog_server }}\nsyslog notice on\n#\nsnmpv2c community read-only {{ snmp_community }}\nsnmp syslocation {{ snmp_location }}\n#\nsave\n", "switch-cisco": "! =====================================================================\n! Cisco Catalyst L2アクセススイッチ テンプレート\n! 二重波カッコの箇所がExcel変数一覧の値に置き換わります。\n! access_ports には「GigabitEthernet0/2 - 24」のようなrange指定を入れてください。\n! =====================================================================\n!\nhostname {{ hostname }}\n!\nenable secret {{ enable_secret }}\n!\nno ip domain-lookup\nip domain-name {{ mgmt_domain }}\n!\nusername {{ local_username }} privilege 15 secret {{ local_password }}\n!\ncrypto key generate rsa modulus 2048\n!\n! ---------------------------------------------------------------------\n! VLAN定義\n! ---------------------------------------------------------------------\nvlan {{ vlan_data_id }}\n name {{ vlan_data_name }}\nvlan {{ vlan_voice_id }}\n name {{ vlan_voice_name }}\nvlan {{ mgmt_vlan_id }}\n name {{ mgmt_vlan_name }}\n!\n! ---------------------------------------------------------------------\n! 上位(ルータ/コア)向けトランク\n! ---------------------------------------------------------------------\ninterface {{ uplink_interface }}\n description Uplink Trunk\n switchport trunk encapsulation dot1q\n switchport mode trunk\n switchport trunk allowed vlan {{ vlan_data_id }},{{ vlan_voice_id }},{{ mgmt_vlan_id }}\n no shutdown\n!\n! ---------------------------------------------------------------------\n! アクセスポート(データ + 音声)\n! ---------------------------------------------------------------------\ninterface range {{ access_ports }}\n description Access Port\n switchport mode access\n switchport access vlan {{ vlan_data_id }}\n switchport voice vlan {{ vlan_voice_id }}\n spanning-tree portfast\n no shutdown\n!\n! ---------------------------------------------------------------------\n! 管理SVIとデフォルトゲートウェイ\n! ---------------------------------------------------------------------\ninterface Vlan{{ mgmt_vlan_id }}\n description Management SVI\n ip address {{ mgmt_ip }} {{ mgmt_mask }}\n no shutdown\n!\nip default-gateway {{ default_gateway }}\n!\nline con 0\n logging synchronous\nline vty 0 4\n login local\n transport input ssh\n!\n! ---------------------------------------------------------------------\n! 運用関連(NTP/Syslog/SNMP)\n! ---------------------------------------------------------------------\nntp server {{ ntp_server }}\n!\nlogging host {{ syslog_server }}\nlogging trap informational\n!\nsnmp-server community {{ snmp_community }} RO\nsnmp-server location {{ snmp_location }}\n!\nend\n", "switch-juniper": "# =====================================================================\n# Juniper EXシリーズ L2アクセススイッチ テンプレート(set形式)\n# 二重波カッコの箇所がExcel変数一覧の値に置き換わります。\n# access_ports には「ge-0/0/1 to ge-0/0/23」の形式で入力してください。\n# 注意: #で始まるコメント行は load set 時にエラーになるため、投入前に削除してください。\n# =====================================================================\n#\nset system host-name {{ hostname }}\nset system time-zone Asia/Tokyo\nset system domain-name {{ mgmt_domain }}\nset system root-authentication plain-text-password-value {{ enable_secret }}\nset system login user {{ local_username }} class super-user authentication plain-text-password-value {{ local_password }}\nset system services ssh\n#\n# VLAN定義\nset vlans {{ vlan_data_name }} vlan-id {{ vlan_data_id }}\nset vlans {{ vlan_voice_name }} vlan-id {{ vlan_voice_id }}\nset vlans {{ mgmt_vlan_name }} vlan-id {{ mgmt_vlan_id }}\nset vlans {{ mgmt_vlan_name }} l3-interface irb.{{ mgmt_vlan_id }}\n#\n# 上位(ルータ/コア)向けトランク\nset interfaces {{ uplink_interface }} description \"Uplink Trunk\"\nset interfaces {{ uplink_interface }} unit 0 family ethernet-switching interface-mode trunk\nset interfaces {{ uplink_interface }} unit 0 family ethernet-switching vlan members {{ vlan_data_name }}\nset interfaces {{ uplink_interface }} unit 0 family ethernet-switching vlan members {{ vlan_voice_name }}\nset interfaces {{ uplink_interface }} unit 0 family ethernet-switching vlan members {{ mgmt_vlan_name }}\n#\n# アクセスポート(データ + 音声VLAN)\nset interfaces interface-range ACCESS-PORTS member-range {{ access_ports }}\nset interfaces interface-range ACCESS-PORTS unit 0 family ethernet-switching interface-mode access\nset interfaces interface-range ACCESS-PORTS unit 0 family ethernet-switching vlan members {{ vlan_data_name }}\nset switch-options voip interface ACCESS-PORTS vlan {{ vlan_voice_name }}\n#\n# 管理インタフェースとデフォルトルート\nset interfaces irb unit {{ mgmt_vlan_id }} description \"Management\"\nset interfaces irb unit {{ mgmt_vlan_id }} family inet address {{ mgmt_ip }}/{{ mgmt_prefix }}\nset routing-options static route 0.0.0.0/0 next-hop {{ default_gateway }}\n#\n# スパニングツリー\nset protocols rstp interface all\n#\n# 運用関連(NTP/Syslog/SNMP)\nset system ntp server {{ ntp_server }}\nset system syslog host {{ syslog_server }} any info\nset snmp community {{ snmp_community }} authorization read-only\nset snmp location \"{{ snmp_location }}\"\n", "switch-nec": "# =====================================================================\n# NEC QX-Sシリーズ L2アクセススイッチ テンプレート\n# 二重波カッコの箇所がExcel変数一覧の値に置き換わります。\n# access_ports には「GigabitEthernet1/0/2 to GigabitEthernet1/0/24」の形式で入力。\n# 「★要確認」の行は機種・ソフト版数によりコマンドが異なる場合があります。\n# 投入前に必ず該当機種のコマンドリファレンスで確認してください。\n# =====================================================================\n#\nsysname {{ hostname }}\n#\n# 管理ユーザー ★要確認: level/authorization-attribute は版数差あり\nlocal-user {{ local_username }}\n password simple {{ local_password }}\n service-type ssh terminal\n authorization-attribute level 3\n#\nssh server enable\nuser-interface vty 0 4\n authentication-mode scheme\n protocol inbound ssh\n#\n# ---------------------------------------------------------------------\n# VLAN定義\n# ---------------------------------------------------------------------\nvlan {{ vlan_data_id }}\n name {{ vlan_data_name }}\nvlan {{ vlan_voice_id }}\n name {{ vlan_voice_name }}\nvlan {{ mgmt_vlan_id }}\n name {{ mgmt_vlan_name }}\n#\n# ---------------------------------------------------------------------\n# 上位(ルータ/コア)向けトランク\n# ---------------------------------------------------------------------\ninterface {{ uplink_interface }}\n description Uplink Trunk\n port link-type trunk\n port trunk permit vlan {{ vlan_data_id }} {{ vlan_voice_id }} {{ mgmt_vlan_id }}\n#\n# ---------------------------------------------------------------------\n# アクセスポート(データ + 音声) ★要確認: voice vlan有効化手順\n# ---------------------------------------------------------------------\ninterface range {{ access_ports }}\n port link-type access\n port access vlan {{ vlan_data_id }}\n voice vlan {{ vlan_voice_id }} enable\n#\n# ---------------------------------------------------------------------\n# 管理VLANインタフェースとデフォルトルート\n# ---------------------------------------------------------------------\ninterface Vlan-interface{{ mgmt_vlan_id }}\n description Management\n ip address {{ mgmt_ip }} {{ mgmt_mask }}\n#\nip route-static 0.0.0.0 0.0.0.0 {{ default_gateway }}\n#\n# ---------------------------------------------------------------------\n# 運用関連(NTP/Syslog/SNMP)\n# ---------------------------------------------------------------------\nntp-service unicast-server {{ ntp_server }}\n#\ninfo-center loghost {{ syslog_server }}\n#\nsnmp-agent\nsnmp-agent sys-info version v2c\nsnmp-agent community read {{ snmp_community }}\nsnmp-agent sys-info location {{ snmp_location }}\n", "switch-yamaha": "! =====================================================================\n! YAMAHA SWXシリーズ L2アクセススイッチ テンプレート\n! 二重波カッコの箇所がExcel変数一覧の値に置き換わります。\n! uplink_interface には port1.1、access_ports には port1.2-24 のような値を入力。\n! 「★要確認」の行は機種・ファーム版数によりコマンドが異なる場合があります。\n! 投入前に必ず該当機種のコマンドリファレンスで確認してください。\n! =====================================================================\n!\nhostname {{ hostname }}\n!\n! 管理ユーザー ★要確認: username系コマンドの書式は機種差あり\nusername {{ local_username }} privilege on password {{ local_password }}\n!\nssh-server enable\ntelnet-server disable\n!\n! ---------------------------------------------------------------------\n! VLAN定義\n! ---------------------------------------------------------------------\nvlan database\n vlan {{ vlan_data_id }} name {{ vlan_data_name }}\n vlan {{ vlan_voice_id }} name {{ vlan_voice_name }}\n vlan {{ mgmt_vlan_id }} name {{ mgmt_vlan_name }}\n!\n! ---------------------------------------------------------------------\n! 上位(ルータ/コア)向けトランク\n! ---------------------------------------------------------------------\ninterface {{ uplink_interface }}\n switchport mode trunk\n switchport trunk allowed vlan add {{ vlan_data_id }},{{ vlan_voice_id }},{{ mgmt_vlan_id }}\n!\n! ---------------------------------------------------------------------\n! アクセスポート(データ + 音声) ★要確認: voice vlan対応機種か確認\n! ---------------------------------------------------------------------\ninterface {{ access_ports }}\n switchport mode access\n switchport access vlan {{ vlan_data_id }}\n switchport voice vlan {{ vlan_voice_id }}\n!\n! ---------------------------------------------------------------------\n! 管理VLANインタフェースとデフォルトゲートウェイ\n! ---------------------------------------------------------------------\ninterface vlan{{ mgmt_vlan_id }}\n ip address {{ mgmt_ip }}/{{ mgmt_prefix }}\n!\nip route 0.0.0.0/0 {{ default_gateway }}\n!\n! ---------------------------------------------------------------------\n! 運用関連(NTP/Syslog/SNMP)\n! ---------------------------------------------------------------------\nntpdate server ipv4 {{ ntp_server }}\n!\nlogging host {{ syslog_server }}\n!\nsnmp-server community {{ snmp_community }} ro\nsnmp-server location {{ snmp_location }}\n"}, "fields": {"router": [["site_name", "拠点名(ファイル名に使用)", "Tokyo-Branch"], ["hostname", "ホスト名", "RT-TOKYO-01"], ["enable_secret", "特権パスワード(enable/administrator/root)", "Cisco123!"], ["mgmt_domain", "ドメイン名(SSH鍵生成用)", "example.local"], ["local_username", "管理ユーザー名", "admin"], ["local_password", "管理ユーザーパスワード", "AdminPass123!"], ["mgmt_acl_permit_network", "管理アクセス許可ネットワーク", "10.0.0.0"], ["mgmt_acl_permit_wildcard", "同ワイルドカードマスク", "0.0.0.255"], ["wan_interface", "WANインタフェース名(ベンダの流儀で)", "GigabitEthernet0/0"], ["wan_description", "WAN description", "Link to HQ via ISP-A"], ["wan_ip", "WAN IPアドレス", "203.0.113.2"], ["wan_mask", "WANサブネットマスク", "255.255.255.252"], ["lan_interface", "LANインタフェース名(ベンダの流儀で)", "GigabitEthernet0/1"], ["vlan_data_id", "データVLAN ID", "10"], ["vlan_data_name", "データVLAN名", "DATA"], ["vlan_data_ip", "データVLANゲートウェイIP", "192.168.10.1"], ["vlan_data_mask", "データVLANマスク", "255.255.255.0"], ["vlan_voice_id", "音声VLAN ID", "20"], ["vlan_voice_name", "音声VLAN名", "VOICE"], ["vlan_voice_ip", "音声VLANゲートウェイIP", "192.168.20.1"], ["vlan_voice_mask", "音声VLANマスク", "255.255.255.0"], ["ospf_process_id", "OSPFプロセスID", "1"], ["ospf_router_id", "OSPFルータID", "192.168.10.1"], ["ospf_area", "OSPFエリア", "0"], ["ntp_server", "NTPサーバ", "192.168.10.10"], ["syslog_server", "Syslogサーバ", "192.168.10.20"], ["snmp_community", "SNMPコミュニティ", "public-ro"], ["snmp_location", "SNMPロケーション", "Tokyo-HQ-1F"]], "switch": [["site_name", "拠点名(ファイル名に使用)", "Tokyo-Branch"], ["hostname", "ホスト名", "SW-TOKYO-01"], ["enable_secret", "特権パスワード(enable/root)", "Cisco123!"], ["mgmt_domain", "ドメイン名(SSH鍵生成用)", "example.local"], ["local_username", "管理ユーザー名", "admin"], ["local_password", "管理ユーザーパスワード", "AdminPass123!"], ["mgmt_vlan_id", "管理VLAN ID", "99"], ["mgmt_vlan_name", "管理VLAN名", "MGMT"], ["mgmt_ip", "管理IPアドレス", "192.168.99.11"], ["mgmt_mask", "管理サブネットマスク", "255.255.255.0"], ["default_gateway", "デフォルトゲートウェイ", "192.168.99.1"], ["vlan_data_id", "データVLAN ID", "10"], ["vlan_data_name", "データVLAN名", "DATA"], ["vlan_voice_id", "音声VLAN ID", "20"], ["vlan_voice_name", "音声VLAN名", "VOICE"], ["uplink_interface", "上位向けトランクポート(ベンダの流儀で)", "GigabitEthernet0/1"], ["access_ports", "アクセスポート範囲(ベンダの流儀で)", "GigabitEthernet0/2 - 24"], ["ntp_server", "NTPサーバ", "192.168.10.10"], ["syslog_server", "Syslogサーバ", "192.168.10.20"], ["snmp_community", "SNMPコミュニティ", "public-ro"], ["snmp_location", "SNMPロケーション", "Tokyo-HQ-1F"]]}, "vendorHints": {"router": {"cisco": {"wan_interface": "GigabitEthernet0/0", "lan_interface": "GigabitEthernet0/1"}, "nec": {"wan_interface": "GigaEthernet0.0", "lan_interface": "GigaEthernet1.0"}, "yamaha": {"wan_interface": "lan2", "lan_interface": "lan1"}, "juniper": {"wan_interface": "ge-0/0/0", "lan_interface": "ge-0/0/1"}}, "switch": {"cisco": {"uplink_interface": "GigabitEthernet0/1", "access_ports": "GigabitEthernet0/2 - 24"}, "nec": {"uplink_interface": "GigabitEthernet1/0/1", "access_ports": "GigabitEthernet1/0/2 to GigabitEthernet1/0/24"}, "yamaha": {"uplink_interface": "port1.1", "access_ports": "port1.2-24"}, "juniper": {"uplink_interface": "ge-0/0/0", "access_ports": "ge-0/0/1 to ge-0/0/23"}}}, "vendorLabels": {"cisco": "Cisco", "nec": "NEC", "yamaha": "YAMAHA", "juniper": "Juniper"}};
+
+let device = "router";
+let vendor = "cisco";
+
+const deviceLabels = { router: "ルータ", switch: "スイッチ" };
+
+function buildSelectors() {
+  const ds = document.getElementById("device-sel");
+  ds.innerHTML = "";
+  for (const d of ["router", "switch"]) {
+    const b = document.createElement("button");
+    b.textContent = deviceLabels[d];
+    b.className = d === device ? "active" : "";
+    b.onclick = () => { device = d; buildSelectors(); buildFields(); };
+    ds.appendChild(b);
+  }
+  const vs = document.getElementById("vendor-sel");
+  vs.innerHTML = "";
+  for (const v of Object.keys(DATA.vendorLabels)) {
+    const b = document.createElement("button");
+    b.textContent = DATA.vendorLabels[v];
+    b.className = v === vendor ? "active" : "";
+    b.onclick = () => { vendor = v; buildSelectors(); applyVendorHints(); };
+    vs.appendChild(b);
+  }
+}
+
+function buildFields() {
+  const wrap = document.getElementById("fields");
+  wrap.innerHTML = "";
+  for (const [key, label, example] of DATA.fields[device]) {
+    const div = document.createElement("div");
+    div.className = "field";
+    const lab = document.createElement("label");
+    lab.textContent = label + "  (" + key + ")";
+    const inp = document.createElement("input");
+    inp.id = "f_" + key;
+    inp.value = example;
+    div.appendChild(lab); div.appendChild(inp);
+    wrap.appendChild(div);
+  }
+  applyVendorHints();
+}
+
+function applyVendorHints() {
+  const hints = DATA.vendorHints[device][vendor] || {};
+  for (const [key, val] of Object.entries(hints)) {
+    const inp = document.getElementById("f_" + key);
+    if (inp) inp.value = val;
+  }
+}
+
+function maskToPrefix(mask) {
+  const parts = String(mask).split(".").map(Number);
+  if (parts.length !== 4 || parts.some(isNaN)) return null;
+  let bits = "";
+  for (const p of parts) bits += p.toString(2).padStart(8, "0");
+  const ones = bits.indexOf("0") === -1 ? 32 : bits.indexOf("0");
+  if (bits.slice(ones).includes("1")) return null; // 不連続マスク
+  return ones;
+}
+
+function networkAddr(ip, prefix) {
+  const parts = String(ip).split(".").map(Number);
+  if (parts.length !== 4 || parts.some(isNaN)) return null;
+  const ipNum = ((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
+  const maskNum = prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0;
+  const net = (ipNum & maskNum) >>> 0;
+  return [(net >>> 24) & 255, (net >>> 16) & 255, (net >>> 8) & 255, net & 255].join(".");
+}
+
+function addDerived(vars) {
+  const out = { ...vars };
+  for (const [key, val] of Object.entries(vars)) {
+    if (key.endsWith("_mask") && val) {
+      const base = key.slice(0, -5);
+      const prefix = maskToPrefix(val);
+      if (prefix === null) continue;
+      out[base + "_prefix"] = prefix;
+      const ip = vars[base + "_ip"];
+      if (ip) {
+        const net = networkAddr(ip, prefix);
+        if (net) out[base + "_network"] = net;
+      }
+    }
+  }
+  if (vars.mgmt_acl_permit_wildcard) {
+    const inv = String(vars.mgmt_acl_permit_wildcard).split(".").map(o => 255 - Number(o)).join(".");
+    const p = maskToPrefix(inv);
+    if (p !== null) out.mgmt_acl_prefix = p;
+  }
+  if (vars.lan_interface) {
+    out.lan_interface_base = String(vars.lan_interface).replace(/\.[^.]*$/, "");
+  }
+  if (vars.ospf_area !== undefined && vars.ospf_area !== "") {
+    out.ospf_area_yamaha = String(vars.ospf_area) === "0" ? "backbone" : String(vars.ospf_area);
+  }
+  return out;
+}
+
+function generate() {
+  const vars = {};
+  for (const [key] of DATA.fields[device]) {
+    vars[key] = document.getElementById("f_" + key).value.trim();
+  }
+  const all = addDerived(vars);
+  const tpl = DATA.templates[device + "-" + vendor];
+  const rendered = tpl.replace(/\{\{\s*(\w+)\s*\}\}/g, (m, name) =>
+    all[name] !== undefined ? all[name] : m);
+  document.getElementById("output").value = rendered;
+  const leftover = rendered.match(/\{\{\s*\w+\s*\}\}/g);
+  document.getElementById("status").textContent =
+    leftover ? "注意: 未置換の変数があります: " + leftover.join(", ") : "生成しました";
+  document.getElementById("status").style.color = leftover ? "#a33" : "#2a7";
+}
+
+document.getElementById("generate").onclick = generate;
+document.getElementById("copy").onclick = () => {
+  navigator.clipboard.writeText(document.getElementById("output").value);
+  document.getElementById("status").textContent = "コピーしました";
+};
+document.getElementById("download").onclick = () => {
+  const site = document.getElementById("f_site_name").value.trim() || "config";
+  const blob = new Blob([document.getElementById("output").value], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${site}_${device}_${vendor}.txt`;
+  a.click();
+};
+
+buildSelectors();
+buildFields();
+</script>
+</body>
+</html>
